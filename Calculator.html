@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Calculator</title>
+<style>
+:root {
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  --page: #ece9f1;
+  --body: #2b2233;
+  --lcd: #cfe3c8;
+  --lcd-ink: #1d2b1b;
+  --lcd-dim: #55694f;
+  --key: #f1eef4;
+  --key-ink: #2b2233;
+  --fn: #b9aecb;
+  --op: #ff8f5a;
+  --op-ink: #3a1608;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --page: #15101a; --body: #38294a; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --page: #15101a; --body: #38294a; color-scheme: dark; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: grid; place-items: center;
+  background: var(--page); font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+}
+.calc {
+  width: min(92vw, 340px); padding: 18px; border-radius: 28px;
+  background: var(--body); box-shadow: 0 18px 40px rgba(20, 8, 30, .28);
+}
+.display {
+  background: var(--lcd); color: var(--lcd-ink); border-radius: 14px;
+  padding: 12px 16px; margin-bottom: 16px; text-align: right;
+  min-height: 96px; display: flex; flex-direction: column; justify-content: flex-end;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, .25); overflow: hidden;
+}
+.expr { min-height: 1.3em; font: 15px ui-monospace, Menlo, monospace; color: var(--lcd-dim); }
+.value { font: 600 40px/1.15 ui-monospace, Menlo, monospace; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+.keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+button {
+  font: 600 22px inherit; font-family: inherit; height: 58px; border: 0; border-radius: 16px;
+  background: var(--key); color: var(--key-ink); cursor: pointer;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, .3); transition: transform .06s, box-shadow .06s;
+}
+button:active { transform: translateY(3px); box-shadow: 0 0 0 rgba(0, 0, 0, .3); }
+button:focus-visible { outline: 3px solid var(--lcd); outline-offset: 2px; }
+button.fn { background: var(--fn); }
+button.op { background: var(--op); color: var(--op-ink); }
+button.eq { background: var(--lcd); color: var(--lcd-ink); }
+button.wide { grid-column: span 2; }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+</style>
+</head>
+<body>
+<main class="calc" aria-label="Calculator">
+  <div class="display" aria-live="polite">
+    <div class="expr" id="expr"></div>
+    <div class="value" id="value">0</div>
+  </div>
+  <div class="keys" id="keys"></div>
+</main>
+
+<script>
+// Button layout: [label, kind, action, extra class]
+const layout = [
+  ["AC", "clear", null, "fn"], ["⌫", "back", null, "fn"], ["%", "percent", null, "fn"], ["÷", "op", "/", "op"],
+  ["7", "num", "7"], ["8", "num", "8"], ["9", "num", "9"], ["×", "op", "*", "op"],
+  ["4", "num", "4"], ["5", "num", "5"], ["6", "num", "6"], ["−", "op", "-", "op"],
+  ["1", "num", "1"], ["2", "num", "2"], ["3", "num", "3"], ["+", "op", "+", "op"],
+  ["0", "num", "0", "wide"], [".", "dot", null], ["=", "equals", null, "eq"]
+];
+const symbols = { "/": "÷", "*": "×", "-": "−", "+": "+" };
+
+const exprEl = document.getElementById("expr");
+const valueEl = document.getElementById("value");
+const keysEl = document.getElementById("keys");
+
+let current = "0";      // number being typed (string)
+let previous = null;    // left operand (number)
+let operator = null;    // "+", "-", "*", "/"
+let fresh = false;      // next digit starts a new number
+let error = false;
+
+// Build the keypad with a loop and attach one listener per button
+for (const [label, kind, action, cls] of layout) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.className = cls || "";
+  b.dataset.kind = kind;
+  if (action) b.dataset.action = action;
+  b.setAttribute("aria-label", { "÷": "divide", "×": "multiply", "−": "subtract", "+": "add", "⌫": "backspace", "AC": "all clear", "=": "equals" }[label] || label);
+  b.addEventListener("click", () => press(kind, action));
+  keysEl.appendChild(b);
+}
+
+function calculate(a, b, op) {
+  let r;
+  if (op === "+") r = a + b;
+  else if (op === "-") r = a - b;
+  else if (op === "*") r = a * b;
+  else if (op === "/") {
+    if (b === 0) return null; // divide by zero
+    r = a / b;
+  } else r = b;
+  return parseFloat(r.toPrecision(12)); // trim float noise (0.1 + 0.2)
+}
+
+function press(kind, action) {
+  if (error && kind !== "clear") return;
+
+  if (kind === "num") {
+    if (fresh || current === "0") current = action;
+    else if (current.replace(/[-.]/g, "").length < 12) current += action;
+    fresh = false;
+  } else if (kind === "dot") {
+    if (fresh) { current = "0."; fresh = false; }
+    else if (!current.includes(".")) current += ".";
+  } else if (kind === "back") {
+    if (!fresh) current = current.length > 1 ? current.slice(0, -1) : "0";
+    if (current === "-") current = "0";
+  } else if (kind === "percent") {
+    current = String(parseFloat((parseFloat(current) / 100).toPrecision(12)));
+  } else if (kind === "clear") {
+    current = "0"; previous = null; operator = null; fresh = false; error = false;
+  } else if (kind === "op") {
+    if (operator !== null && !fresh) {
+      // chain: 2 + 3 + ... evaluates the first pair
+      const r = calculate(previous, parseFloat(current), operator);
+      if (r === null) return fail();
+      previous = r; current = String(r);
+    } else if (operator === null) {
+      previous = parseFloat(current);
+    }
+    operator = action; fresh = true;
+  } else if (kind === "equals") {
+    if (operator === null) return;
+    const r = calculate(previous, parseFloat(current), operator);
+    if (r === null) return fail();
+    exprEl.textContent = `${fmt(previous)} ${symbols[operator]} ${fmt(parseFloat(current))} =`;
+    current = String(r); previous = null; operator = null; fresh = true;
+    valueEl.textContent = fmt(r);
+    return;
+  }
+  render();
+}
+
+function fail() {
+  error = true;
+  exprEl.textContent = "";
+  valueEl.textContent = "Can’t divide by 0";
+  valueEl.style.fontSize = "24px";
+}
+
+function fmt(n) {
+  const s = String(n);
+  return s.length > 14 ? n.toExponential(6) : s;
+}
+
+function render() {
+  valueEl.style.fontSize = "";
+  valueEl.textContent = current;
+  exprEl.textContent = operator ? `${fmt(previous)} ${symbols[operator]}` : "";
+}
+
+// Keyboard support
+document.addEventListener("keydown", (e) => {
+  const k = e.key;
+  if (k >= "0" && k <= "9") press("num", k);
+  else if (k === ".") press("dot");
+  else if ("+-*/".includes(k)) press("op", k);
+  else if (k === "Enter" || k === "=") { e.preventDefault(); press("equals"); }
+  else if (k === "Backspace") press("back");
+  else if (k === "Escape") press("clear");
+  else if (k === "%") press("percent");
+});
+</script>
+</body>
+</html>
